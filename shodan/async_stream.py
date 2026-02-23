@@ -73,11 +73,9 @@ class AsyncStream:
                 async with aiohttp.ClientSession() as session:
                     async with session.get(url, params=params, proxy=self._proxies,
                                            timeout=aio_timeout) as resp:
-                        # Status code 524 is special to Cloudflare — no data from streaming servers.
-                        # Note: timeout is either None (no timeout, after normalization of <=0 → None)
-                        # or a positive integer, so `timeout is not None` is equivalent to `timeout > 0`.
+                        # Status code 524 is special to Cloudflare — no data from streaming servers
                         if resp.status == 524:
-                            if timeout is not None:
+                            if timeout is not None and timeout > 0:
                                 # User specified a timeout; exit on 524
                                 return
                             # No timeout specified: back off and retry
