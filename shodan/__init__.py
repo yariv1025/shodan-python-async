@@ -1,2 +1,3 @@
 from shodan.client import Shodan
-from shodan.exception import APIError
+from shodan.async_client import AsyncShodan
+from shodan.exception import APIError, APITimeout
