@@ -306,8 +306,16 @@ class TestAsyncShodanBasic:
         async with AsyncShodan(API_KEY) as api:
             with aioresponses() as m:
                 m.get(_turl('/api/v1/search'), payload=payload)
-                result = await api.trends.search('apache', facets=[])
+                result = await api.trends.search('apache')
         assert 'matches' in result
+
+    async def test_trends_search_with_facets(self):
+        payload = {'total': 1, 'matches': [{'month': '2023-06'}], 'facets': {'product': []}}
+        async with AsyncShodan(API_KEY) as api:
+            with aioresponses() as m:
+                m.get(_turl('/api/v1/search'), payload=payload)
+                result = await api.trends.search('apache', facets=[('product', 10)])
+        assert 'facets' in result
 
     async def test_trends_search_facets(self):
         payload = ['product', 'org']
@@ -551,6 +559,117 @@ class TestAsyncStream:
         assert len(items) == 1
         assert items[0]['ip_str'] == '5.6.7.8'
 
+    async def test_stream_multi_item(self):
+        """Stream delivers multiple items from a multi-line body."""
+        banners = [{'ip_str': '1.2.3.{}'.format(i), 'port': 80} for i in range(5)]
+        body = '\n'.join(json.dumps(b) for b in banners) + '\n'
+        stream = AsyncStream(API_KEY)
+        with aioresponses() as m:
+            m.get(_surl('/shodan/banners'), status=200, body=body)
+            items = []
+            async for item in stream.banners(timeout=1):
+                items.append(item)
+        assert len(items) == 5
+
+
+# ---------------------------------------------------------------------------
+# search_cursor retry tests
+# ---------------------------------------------------------------------------
+
+class TestSearchCursorRetry:
+    """Test search_cursor retry and error behaviour."""
+
+    async def test_search_cursor_retries_on_api_error(self):
+        """search_cursor should retry transient APIErrors."""
+        matches = [{'ip_str': '1.1.1.1'}]
+        page1 = {'matches': matches, 'total': 1}
+        async with AsyncShodan(API_KEY) as api:
+            with aioresponses() as m:
+                # First page succeeds
+                m.get(_url('/shodan/host/search'), payload=page1)
+                banners = []
+                async for banner in api.search_cursor('apache'):
+                    banners.append(banner)
+        assert len(banners) == 1
+
+    async def test_search_cursor_raises_after_retry_limit(self):
+        """search_cursor should raise APIError after exceeding retry limit."""
+        # 101 matches → 2 pages; second page always errors
+        matches = [{'ip_str': '1.1.1.{}'.format(i)} for i in range(100)]
+        page1 = {'matches': matches, 'total': 101}
+        error_resp = {'error': 'Service temporarily unavailable'}
+
+        async with AsyncShodan(API_KEY) as api:
+            with aioresponses() as m:
+                m.get(_url('/shodan/host/search'), payload=page1)
+                # Enough failures to exhaust retries (default retries=5)
+                for _ in range(6):
+                    m.get(_url('/shodan/host/search'), payload=error_resp)
+                with pytest.raises(APIError):
+                    async for _ in api.search_cursor('apache', retries=5):
+                        pass
+
+
+# ---------------------------------------------------------------------------
+# Proxy forwarding tests
+# ---------------------------------------------------------------------------
+
+class TestProxyForwarding:
+    """Verify that proxy settings are forwarded to HTTP calls."""
+
+    async def test_proxy_is_stored_on_client(self):
+        """AsyncShodan stores the proxy argument."""
+        proxy = 'http://proxy.example.com:8080'
+        api = AsyncShodan(API_KEY, proxies=proxy)
+        assert api._proxies == proxy
+        await api.aclose()
+
+    async def test_stream_proxy_is_stored(self):
+        """AsyncStream stores the proxy argument."""
+        from shodan.async_stream import AsyncStream as AS
+        proxy = 'http://proxy.example.com:8080'
+        s = AS(API_KEY, proxies=proxy)
+        assert s._proxies == proxy
+
+    async def test_threatnet_proxy_is_forwarded(self):
+        """AsyncThreatnet forwards proxies to its inner stream."""
+        from shodan.async_threatnet import AsyncThreatnet
+        proxy = 'http://proxy.example.com:8080'
+        tn = AsyncThreatnet(API_KEY, proxies=proxy)
+        assert tn.stream._proxies == proxy
+
+
+# ---------------------------------------------------------------------------
+# AsyncThreatnet stream tests
+# ---------------------------------------------------------------------------
+
+class TestAsyncThreatnet:
+    """Test AsyncThreatnet stream methods."""
+
+    async def test_threatnet_events_yields_items(self):
+        from shodan.async_threatnet import AsyncThreatnet
+        event = {'type': 'syn', 'ip': '1.2.3.4'}
+        body = json.dumps(event) + '\n'
+        tn = AsyncThreatnet(API_KEY)
+        with aioresponses() as m:
+            m.get(re.compile(r'^https://stream\.shodan\.io/threatnet/events.*'),
+                  status=200, body=body)
+            items = []
+            async for item in tn.stream.events(timeout=1):
+                items.append(item)
+        assert len(items) == 1
+        assert items[0]['type'] == 'syn'
+
+    async def test_threatnet_invalid_key(self):
+        from shodan.async_threatnet import AsyncThreatnet
+        tn = AsyncThreatnet('garbage')
+        with aioresponses() as m:
+            m.get(re.compile(r'^https://stream\.shodan\.io/threatnet/events.*'),
+                  status=401, payload={'error': 'Invalid API key'})
+            with pytest.raises(APIError):
+                async for _ in tn.stream.events(timeout=1):
+                    break
+
 
 # ---------------------------------------------------------------------------
 # Import / public API surface tests
@@ -597,3 +716,10 @@ class TestPublicImports:
                                                    'Notifier', 'Organization', 'Tools',
                                                    'Trends'}
         assert not missing, "AsyncShodan is missing methods: {}".format(missing)
+
+    def test_async_threatnet_inner_class_not_named_async_stream(self):
+        """AsyncThreatnet inner class must not shadow the module-level AsyncStream."""
+        from shodan.async_threatnet import AsyncThreatnet
+        # The inner class should NOT be named AsyncStream at the module level
+        assert not hasattr(AsyncThreatnet, 'AsyncStream'), \
+            "AsyncThreatnet.AsyncStream shadows shodan.async_stream.AsyncStream"

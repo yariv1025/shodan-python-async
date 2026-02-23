@@ -7,6 +7,7 @@ Asynchronous Shodan Streaming API client.
 
 :copyright: (c) 2014- by John Matherly
 """
+import asyncio
 import json
 
 import aiohttp
@@ -66,17 +67,22 @@ class AsyncStream:
         url = self.base_url + name
         aio_timeout = aiohttp.ClientTimeout(total=timeout) if timeout else aiohttp.ClientTimeout(total=None)
 
+        retry_delay = 1
         while True:
             try:
                 async with aiohttp.ClientSession() as session:
                     async with session.get(url, params=params, proxy=self._proxies,
                                            timeout=aio_timeout) as resp:
-                        # Status code 524 is special to Cloudflare — no data from streaming servers
+                        # Status code 524 is special to Cloudflare — no data from streaming servers.
+                        # Note: timeout is either None (no timeout, after normalization of <=0 → None)
+                        # or a positive integer, so `timeout is not None` is equivalent to `timeout > 0`.
                         if resp.status == 524:
-                            if timeout is not None and timeout > 0:
+                            if timeout is not None:
                                 # User specified a timeout; exit on 524
                                 return
-                            # No timeout specified: retry
+                            # No timeout specified: back off and retry
+                            await asyncio.sleep(retry_delay)
+                            retry_delay = min(retry_delay * 2, 60)
                             continue
 
                         if resp.status != 200:
@@ -89,6 +95,7 @@ class AsyncStream:
                                 pass
                             raise APIError('Invalid API key or you do not have access to the Streaming API')
 
+                        retry_delay = 1  # reset on successful connection
                         async for line in resp.content:
                             # Strip whitespace; ignore heartbeat (empty) lines
                             line = line.strip()
@@ -100,12 +107,14 @@ class AsyncStream:
                                 yield json.loads(line)
                         # Stream closed normally
                         return
+            except GeneratorExit:
+                raise
             except APIError:
                 raise
+            except asyncio.TimeoutError:
+                raise APIError('Stream timed out')
             except aiohttp.ClientError:
                 raise APIError('Unable to contact the Shodan Streaming API')
-            except Exception:
-                raise APIError('Stream timed out')
 
     async def alert(self, aid=None, timeout=None, raw=False):
         """Stream banners for one or all of the user's network alerts.

@@ -3,8 +3,11 @@
 from setuptools import setup
 
 
-DEPENDENCIES = open('requirements.txt', 'r').read().split('\n')
-README = open('README.rst', 'r').read()
+with open('requirements.txt', 'r') as f:
+    DEPENDENCIES = [line.split('#')[0].strip() for line in f if line.strip() and not line.startswith('#')]
+
+with open('README.rst', 'r') as f:
+    README = f.read()
 
 
 setup(

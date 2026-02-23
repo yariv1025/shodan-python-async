@@ -107,6 +107,7 @@ class AsyncShodan:
             :type description: str
             :returns: dict -- fields are 'success' and 'id' of the notifier
             """
+            args = dict(args)
             args['provider'] = provider
 
             if description:
@@ -269,19 +270,20 @@ class AsyncShodan:
         def __init__(self, parent):
             self.parent = parent
 
-        async def search(self, query, facets):
+        async def search(self, query, facets=None):
             """Search the Shodan historical database.
 
             :param query: Search query; identical syntax to the website
             :type query: str
-            :param facets: A list of properties to get summary information on
-            :type facets: list
+            :param facets: (optional) A list of properties to get summary information on
+            :type facets: list or None
             :returns: A dictionary with 3 main items: matches, facets and total.
             """
             args = {
                 'query': query,
-                'facets': create_facet_string(facets),
             }
+            if facets:
+                args['facets'] = create_facet_string(facets)
 
             return await self.parent._request('/api/v1/search', args, service='trends')
 
@@ -368,7 +370,7 @@ class AsyncShodan:
 
         :param function: API endpoint path
         :type function: str
-        :param params: Query parameters
+        :param params: Query parameters (not mutated)
         :type params: dict
         :param service: Target Shodan service (``'shodan'``, ``'exploits'``, ``'trends'``)
         :type service: str
@@ -379,7 +381,8 @@ class AsyncShodan:
         :returns: Parsed JSON response
         :raises APIError: on non-200 responses or JSON parse failures
         """
-        # Add the API key parameter automatically
+        # Work on a copy so we never mutate the caller's dict
+        params = dict(params)
         params['key'] = self.api_key
 
         # Determine the base_url based on which service we're interacting with
@@ -410,15 +413,16 @@ class AsyncShodan:
                         url, params=encoded,
                         data=json.dumps(json_data),
                         headers={'content-type': 'application/json'},
+                        proxy=self._proxies,
                     )
                 else:
-                    resp = await session.post(url, params=encoded)
+                    resp = await session.post(url, params=encoded, proxy=self._proxies)
             elif method_lower == 'put':
-                resp = await session.put(url, params=encoded)
+                resp = await session.put(url, params=encoded, proxy=self._proxies)
             elif method_lower == 'delete':
-                resp = await session.delete(url, params=encoded)
+                resp = await session.delete(url, params=encoded, proxy=self._proxies)
             else:
-                resp = await session.get(url, params=encoded)
+                resp = await session.get(url, params=encoded, proxy=self._proxies)
             self._api_query_time = asyncio.get_running_loop().time()
         except aiohttp.ClientError:
             raise APIError('Unable to connect to Shodan')
@@ -428,13 +432,13 @@ class AsyncShodan:
             if resp.status == 401:
                 try:
                     body = await resp.json(content_type=None)
-                    error = body['error']
-                except Exception as e:
+                    error = body.get('error') or 'Invalid API key'
+                except Exception:
                     text = await resp.text()
                     if text.startswith('<'):
                         error = 'Invalid API key'
                     else:
-                        error = u'{}'.format(e)
+                        error = 'Invalid API key'
                 raise APIError(error)
             elif resp.status == 403:
                 raise APIError('Access denied (403 Forbidden)')
@@ -652,7 +656,7 @@ class AsyncShodan:
                     yield banner
                 page += 1
                 tries = 0
-            except Exception:
+            except APIError:
                 # We've retried several times but it keeps failing, so lets error out
                 if tries >= retries:
                     raise APIError('Retry limit reached ({:d})'.format(retries))
