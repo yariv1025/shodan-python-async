@@ -1,5 +1,5 @@
-shodan-async: Async Python library and CLI for Shodan
-=======================================================
+shodan-python (async)
+=====================
 
 .. image:: https://img.shields.io/pypi/v/shodan.svg
     :target: https://pypi.org/project/shodan/
@@ -7,24 +7,31 @@ shodan-async: Async Python library and CLI for Shodan
 .. image:: https://img.shields.io/github/contributors/achillean/shodan-python.svg
     :target: https://github.com/achillean/shodan-python/graphs/contributors
 
-An async-first fork of the official Shodan Python library. Shodan is a search engine for
-Internet-connected devices — this library gives developers non-blocking access to all of the
-data stored in Shodan so they can automate tasks and integrate into existing async applications.
+An async-first Python library and CLI for the `Shodan <https://shodan.io>`_ search engine.
+
+**Based on the original** `shodan-python <https://github.com/achillean/shodan-python>`_
+**library by** `John Matherly <https://twitter.com/achillean>`_ **(jmath@shodan.io) and all
+its** `contributors <https://github.com/achillean/shodan-python/graphs/contributors>`_,
+**released under the** `MIT License <https://github.com/achillean/shodan-python/blob/master/LICENSE>`_.
+**This fork adds a fully async API layer built on** ``aiohttp``.
+
+Shodan is a search engine for Internet-connected devices.  This library gives
+developers **non-blocking** access to all of the data stored in Shodan so they
+can automate tasks and integrate into modern async Python applications.
 
 Features
 --------
 
 - Fully **async** REST and Streaming APIs via ``AsyncShodan`` / ``AsyncStream`` (Python 3.8+, powered by ``aiohttp``)
-- Search Shodan
-- `Fast/ bulk IP lookups <https://help.shodan.io/developer-fundamentals/looking-up-ip-info>`_
-- Streaming API support for real-time consumption of Shodan firehose (``async for``)
-- `Network alerts (aka private firehose) <https://help.shodan.io/guides/how-to-monitor-network>`_
-- `Manage Email Notifications <https://asciinema.org/a/7WvyDtNxn0YeNU70ozsxvXDmL>`_
-- Exploit search API fully implemented
-- Bulk data downloads
-- Access the Shodan DNS DB to view domain information
-- `Command-line interface <https://cli.shodan.io>`_ (uses the sync client internally)
-- Legacy synchronous ``Shodan`` client retained for backward compatibility
+- `Search Shodan <https://developer.shodan.io/api>`_
+- `Fast / bulk IP lookups <https://help.shodan.io/developer-fundamentals/looking-up-ip-info>`_
+- Streaming API support for real-time banner consumption (``async for``)
+- `Network alerts / private firehose <https://help.shodan.io/guides/how-to-monitor-network>`_
+- `Manage email notifications <https://asciinema.org/a/7WvyDtNxn0YeNU70ozsxvXDmL>`_
+- Exploit search and bulk data downloads
+- Shodan DNS DB — domain information lookup
+- `Trends <https://trends.shodan.io>`_ historical search
+- `Command-line interface <https://cli.shodan.io>`_ (backed by the async client via ``asyncio.run()``)
 
 .. image:: https://cli.shodan.io/img/shodan-cli-preview.png
     :target: https://asciinema.org/~Shodan
@@ -35,94 +42,173 @@ Features
 Quick Start
 -----------
 
+Grab your API key from https://account.shodan.io
+
+.. code-block:: bash
+
+    $ pip install shodan
+
 .. code-block:: python
 
     import asyncio
     from shodan import AsyncShodan
 
     async def main():
-        async with AsyncShodan('MY API KEY') as api:
-            # Lookup API plan info
+        async with AsyncShodan('MY_API_KEY') as api:
+            # API plan information
             info = await api.info()
             print(info)
 
-            # Lookup an IP
-            ipinfo = await api.host('8.8.8.8')
-            print(ipinfo)
+            # Single IP lookup
+            host = await api.host('8.8.8.8')
+            print(host['ip_str'], host.get('org', 'n/a'))
+
+            # Count results
+            result = await api.count('tag:ics')
+            print('ICS devices:', result['total'])
 
             # Iterate over all results with the async cursor
-            async for banner in api.search_cursor('http.title:"hacked by"'):
+            async for banner in api.search_cursor('apache'):
                 print(banner['ip_str'])
 
-            # Get the total number of industrial control systems services on the Internet
-            ics_services = await api.count('tag:ics')
-            print('Industrial Control Systems: {}'.format(ics_services['total']))
-
-            # Stream real-time banners
+            # Real-time banner stream (stops after 30 seconds)
             async for banner in api.stream.banners(timeout=30):
                 print(banner)
 
     asyncio.run(main())
 
-Grab your API key from https://account.shodan.io
 
-Migrating from the Sync API
-----------------------------
+Concurrent lookups with asyncio
+---------------------------------
 
-The asynchronous ``AsyncShodan`` client has the same public API surface as the legacy
-``Shodan`` client.  Migration is a one-for-one swap:
+.. code-block:: python
 
-+----------------------------------------------+----------------------------------------------------+
-| Sync (legacy)                                | Async                                              |
-+==============================================+====================================================+
-| ``from shodan import Shodan``                | ``from shodan import AsyncShodan``                 |
-+----------------------------------------------+----------------------------------------------------+
-| ``api = Shodan(key)``                        | ``async with AsyncShodan(key) as api:``            |
-+----------------------------------------------+----------------------------------------------------+
-| ``api.search(query)``                        | ``await api.search(query)``                        |
-+----------------------------------------------+----------------------------------------------------+
-| ``api.host(ip)``                             | ``await api.host(ip)``                             |
-+----------------------------------------------+----------------------------------------------------+
-| ``for b in api.search_cursor(q):``           | ``async for b in api.search_cursor(q):``           |
-+----------------------------------------------+----------------------------------------------------+
-| ``for b in api.stream.banners():``           | ``async for b in api.stream.banners():``           |
-+----------------------------------------------+----------------------------------------------------+
+    import asyncio
+    from shodan import AsyncShodan
 
-Key differences:
+    async def main():
+        ips = ['8.8.8.8', '1.1.1.1', '9.9.9.9']
+        async with AsyncShodan('MY_API_KEY') as api:
+            results = await asyncio.gather(*[api.host(ip) for ip in ips])
+            for r in results:
+                print(r['ip_str'], r.get('org', 'n/a'))
 
-- Every REST method on ``AsyncShodan`` is a coroutine; prefix calls with ``await``.
-- ``search_cursor`` is an async generator; use ``async for``.
-- All stream methods (``banners``, ``alert``, ``asn``, etc.) are async generators.
-- Use the client as an async context manager (``async with``) or call ``await api.aclose()``
-  when done to release the underlying HTTP session.
-- Requires Python 3.8+ and ``aiohttp>=3.9.0``.
+    asyncio.run(main())
+
+
+Streaming API
+-------------
+
+All stream methods are **async generators** — consume them with ``async for``:
+
+.. code-block:: python
+
+    from shodan import AsyncShodan
+
+    async def main():
+        async with AsyncShodan('MY_API_KEY') as api:
+            # All banners
+            async for banner in api.stream.banners():
+                print(banner)
+
+            # Filtered by port
+            async for banner in api.stream.ports([22, 80, 443]):
+                print(banner)
+
+            # Filtered by country
+            async for banner in api.stream.countries(['US', 'DE']):
+                print(banner)
+
+            # Filtered by ASN
+            async for banner in api.stream.asn(['AS15169']):
+                print(banner)
+
+            # Custom filter query
+            async for banner in api.stream.custom('port:8080 country:US'):
+                print(banner)
+
+            # Network alert (private firehose)
+            async for banner in api.stream.alert(aid='MY_ALERT_ID'):
+                print(banner)
+
+
+Session management
+------------------
+
+Use the async context manager to ensure the HTTP session is properly closed:
+
+.. code-block:: python
+
+    async with AsyncShodan('MY_API_KEY') as api:
+        result = await api.search('nginx')
+
+Or close manually when the context manager is not convenient:
+
+.. code-block:: python
+
+    api = AsyncShodan('MY_API_KEY')
+    try:
+        result = await api.search('nginx')
+    finally:
+        await api.aclose()
+
 
 Python version support
 ----------------------
 
-The asynchronous ``AsyncShodan`` client requires **Python 3.8 or newer**.
+**Python 3.8 or newer** is required.  ``aiohttp >= 3.9.0`` is used for all
+HTTP and streaming communication.
 
-The legacy synchronous ``Shodan`` client supports Python 2.7 and Python 3.x (retained for
-backward compatibility — existing code that imports ``from shodan import Shodan`` continues to work).
 
 Installation
 ------------
-
-To install the Shodan library, simply:
 
 .. code-block:: bash
 
     $ pip install shodan
 
-Or if you don't have pip installed (which you should seriously install):
+Or from source:
 
 .. code-block:: bash
 
-    $ easy_install shodan
+    $ git clone https://github.com/achillean/shodan-python
+    $ cd shodan-python
+    $ pip install -e .
+
+
+Security
+--------
+
+This library follows OWASP best practices:
+
+- All communication uses **HTTPS** exclusively; plain-HTTP base-URL overrides
+  via ``SHODAN_API_URL`` are rejected at startup (OWASP A02).
+- API keys are never included in ``__repr__`` output or exception messages to
+  prevent accidental exposure in logs and tracebacks (OWASP A02 / A09).
+- URL path parameters are validated to reject null bytes and newline characters,
+  guarding against null-byte and HTTP header injection (OWASP A03).
+- ``aiohttp`` performs TLS certificate verification by default.
 
 
 Documentation
 -------------
 
-Documentation is available at https://shodan.readthedocs.org/ and https://help.shodan.io
+- Official Shodan API reference: https://developer.shodan.io/api
+- Shodan help centre: https://help.shodan.io
+- ReadTheDocs: https://shodan.readthedocs.org/
 
+
+Credits
+-------
+
+This project is a fork of `shodan-python <https://github.com/achillean/shodan-python>`_,
+the official Shodan Python library originally created and maintained by
+`John Matherly <https://twitter.com/achillean>`_ (Shodan founder, jmath@shodan.io) and the
+`contributor community <https://github.com/achillean/shodan-python/graphs/contributors>`_.
+
+The original library is copyright (c) 2014- John Matherly and is released under the
+`MIT License <https://github.com/achillean/shodan-python/blob/master/LICENSE>`_.
+
+This async fork retains all original functionality and replaces the
+``requests``-based implementation with a fully non-blocking ``AsyncShodan`` /
+``AsyncStream`` API layer built on ``aiohttp``.

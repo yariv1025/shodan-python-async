@@ -1,7 +1,6 @@
 click
 click-plugins
 colorama
-requests>=2.2.1
 XlsxWriter
 tldextract
 aiohttp>=3.9.0,<4.0

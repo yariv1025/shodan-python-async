@@ -60,6 +60,7 @@ class AsyncShodan:
             :type dataset: str
             :returns: A list of objects where each object contains a 'name', 'size', 'timestamp' and 'url'
             """
+            AsyncShodan._sanitize_path_param(dataset, 'dataset')
             return await self.parent._request('/shodan/data/{}'.format(dataset), {})
 
     class Dns:
@@ -81,6 +82,7 @@ class AsyncShodan:
             :type page: int
             :returns: dict with DNS information
             """
+            AsyncShodan._sanitize_path_param(domain, 'domain')
             args = {
                 'page': page,
             }
@@ -124,6 +126,7 @@ class AsyncShodan:
             :type args: dict
             :returns: dict -- fields are 'success' and 'id' of the notifier
             """
+            AsyncShodan._sanitize_path_param(nid, 'nid')
             return await self.parent._request('/notifier/{}'.format(nid), args, method='put')
 
         async def get(self, nid):
@@ -133,6 +136,7 @@ class AsyncShodan:
             :type nid: str
             :returns: dict -- object describing the notifier settings
             """
+            AsyncShodan._sanitize_path_param(nid, 'nid')
             return await self.parent._request('/notifier/{}'.format(nid), {})
 
         async def list_notifiers(self):
@@ -156,6 +160,7 @@ class AsyncShodan:
             :type nid: str
             :returns: dict -- 'success' set to True if action succeeded
             """
+            AsyncShodan._sanitize_path_param(nid, 'nid')
             return await self.parent._request('/notifier/{}'.format(nid), {}, method='delete')
 
     class Tools:
@@ -227,6 +232,7 @@ class AsyncShodan:
             :type ip: str
             :returns: float -- honeyscore ranging from 0.0 to 1.0
             """
+            AsyncShodan._sanitize_path_param(ip, 'ip')
             return await self.parent._request('/labs/honeyscore/{}'.format(ip), {})
 
     class Organization:
@@ -244,6 +250,7 @@ class AsyncShodan:
             :type notify: bool
             :returns: True if it succeeded and raises an exception otherwise
             """
+            AsyncShodan._sanitize_path_param(user, 'user')
             return (await self.parent._request('/org/member/{}'.format(user), {
                 'notify': notify,
             }, method='PUT'))['success']
@@ -262,6 +269,7 @@ class AsyncShodan:
             :type user: str
             :returns: True if it succeeded and raises an exception otherwise
             """
+            AsyncShodan._sanitize_path_param(user, 'user')
             return (await self.parent._request('/org/member/{}'.format(user), {}, method='DELETE'))['success']
 
     class Trends:
@@ -328,8 +336,48 @@ class AsyncShodan:
         self.tools = self.Tools(self)
         self.stream = AsyncStream(key, proxies=proxies)
 
-        if os.environ.get('SHODAN_API_URL'):
-            self.base_url = os.environ.get('SHODAN_API_URL')
+        # Allow overriding the base URL via environment variable.
+        # Only accept https:// URLs to enforce encrypted transport (OWASP A02).
+        env_url = os.environ.get('SHODAN_API_URL')
+        if env_url:
+            if not env_url.startswith('https://'):
+                raise ValueError(
+                    'SHODAN_API_URL must use the https:// scheme; '
+                    'plain HTTP is not permitted.'
+                )
+            self.base_url = env_url
+
+    def __repr__(self):
+        # Never include the API key in the string representation to avoid
+        # accidental exposure in logs or tracebacks (OWASP A02 / A09).
+        return '<AsyncShodan api_key=***>'
+
+    @staticmethod
+    def _sanitize_path_param(value, name='parameter'):
+        """Validate a user-supplied value that will be embedded in a URL path.
+
+        Rejects values containing null bytes, newlines, or carriage returns,
+        which could be used for null-byte injection or HTTP header injection
+        (OWASP A03 – Injection).
+
+        :param value: The value to validate
+        :type value: str
+        :param name: Human-readable parameter name (used in error messages)
+        :type name: str
+        :returns: The original value if it passes validation
+        :raises TypeError: if *value* is not a string
+        :raises ValueError: if *value* is blank or contains forbidden characters
+        """
+        if not isinstance(value, str):
+            raise TypeError('{!r} must be a string, got {}'.format(
+                name, type(value).__name__))
+        if not value.strip():
+            raise ValueError('{!r} must not be blank'.format(name))
+        for ch in ('\x00', '\n', '\r'):
+            if ch in value:
+                raise ValueError(
+                    'Invalid character in {!r}'.format(name))
+        return value
 
     def _get_session(self):
         """Return (creating if needed) the shared aiohttp ClientSession."""
@@ -488,6 +536,9 @@ class AsyncShodan:
         if isinstance(ips, str):
             ips = [ips]
 
+        for ip in ips:
+            self._sanitize_path_param(ip, 'ip')
+
         params = {}
         if history:
             params['history'] = history
@@ -574,6 +625,7 @@ class AsyncShodan:
         :type scan_id: str
         :returns: A dictionary with general information about the scan, including its status.
         """
+        self._sanitize_path_param(scan_id, 'scan_id')
         return await self._request('/shodan/scan/{}'.format(scan_id), {})
 
     async def search(self, query, page=1, limit=None, offset=None, facets=None, minify=True, fields=None):
@@ -772,6 +824,7 @@ class AsyncShodan:
         :type ip: str or list
         :returns: A dict describing the alert
         """
+        self._sanitize_path_param(aid, 'aid')
         data = {
             'filters': {
                 'ip': ip,
@@ -790,6 +843,7 @@ class AsyncShodan:
         :returns: dict or list of alert objects
         """
         if aid:
+            self._sanitize_path_param(aid, 'aid')
             func = '/shodan/alert/{}/info'.format(aid)
         else:
             func = '/shodan/alert/info'
@@ -805,6 +859,7 @@ class AsyncShodan:
         :type aid: str
         :returns: dict with success status
         """
+        self._sanitize_path_param(aid, 'aid')
         return await self._request('/shodan/alert/{}'.format(aid), params={}, method='delete')
 
     async def alert_triggers(self):
@@ -823,6 +878,8 @@ class AsyncShodan:
         :type trigger: str
         :returns: dict with success status
         """
+        self._sanitize_path_param(aid, 'aid')
+        self._sanitize_path_param(trigger, 'trigger')
         return await self._request('/shodan/alert/{}/trigger/{}'.format(aid, trigger), {}, method='put')
 
     async def disable_alert_trigger(self, aid, trigger):
@@ -834,6 +891,8 @@ class AsyncShodan:
         :type trigger: str
         :returns: dict with success status
         """
+        self._sanitize_path_param(aid, 'aid')
+        self._sanitize_path_param(trigger, 'trigger')
         return await self._request('/shodan/alert/{}/trigger/{}'.format(aid, trigger), {}, method='delete')
 
     async def ignore_alert_trigger_notification(self, aid, trigger, ip, port, vulns=None):
@@ -851,6 +910,9 @@ class AsyncShodan:
         :type vulns: list or None
         :returns: dict with success status
         """
+        self._sanitize_path_param(aid, 'aid')
+        self._sanitize_path_param(trigger, 'trigger')
+        self._sanitize_path_param(ip, 'ip')
         if trigger in ('vulnerable', 'vulnerable_unverified') and vulns and isinstance(vulns, list):
             return await self._request(
                 '/shodan/alert/{}/trigger/{}/ignore/{}:{}/{}'.format(
@@ -874,6 +936,9 @@ class AsyncShodan:
         :type port: int
         :returns: dict with success status
         """
+        self._sanitize_path_param(aid, 'aid')
+        self._sanitize_path_param(trigger, 'trigger')
+        self._sanitize_path_param(ip, 'ip')
         return await self._request(
             '/shodan/alert/{}/trigger/{}/ignore/{}:{}'.format(aid, trigger, ip, port),
             {}, method='delete')
@@ -887,6 +952,8 @@ class AsyncShodan:
         :type nid: str
         :returns: dict with success status
         """
+        self._sanitize_path_param(aid, 'aid')
+        self._sanitize_path_param(nid, 'nid')
         return await self._request('/shodan/alert/{}/notifier/{}'.format(aid, nid), {}, method='put')
 
     async def remove_alert_notifier(self, aid, nid):
@@ -898,4 +965,6 @@ class AsyncShodan:
         :type nid: str
         :returns: dict with success status
         """
+        self._sanitize_path_param(aid, 'aid')
+        self._sanitize_path_param(nid, 'nid')
         return await self._request('/shodan/alert/{}/notifier/{}'.format(aid, nid), {}, method='delete')
