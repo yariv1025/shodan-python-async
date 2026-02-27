@@ -690,9 +690,11 @@ class TestPublicImports:
         from shodan import APITimeout
         assert issubclass(APITimeout, APIError)
 
-    def test_sync_shodan_still_importable(self):
+    def test_compat_shodan_importable(self):
+        """Shodan compat wrapper is importable and is the sync shim, not the old requests client."""
         from shodan import Shodan
-        assert Shodan is not None
+        from shodan.compat import Shodan as CompatShodan
+        assert Shodan is CompatShodan
 
     def test_async_shodan_context_manager(self):
         """AsyncShodan supports async context manager protocol."""
@@ -701,21 +703,24 @@ class TestPublicImports:
         assert hasattr(AsyncShodan, 'aclose')
 
     def test_async_shodan_has_all_public_methods(self):
-        """Every public sync method on Shodan has an async counterpart."""
-        from shodan.client import Shodan
-        sync_methods = {
-            name for name in dir(Shodan)
-            if not name.startswith('_') and callable(getattr(Shodan, name))
+        """AsyncShodan exposes the full expected public API surface."""
+        expected = {
+            'count', 'host', 'info', 'ports', 'protocols',
+            'scan', 'scans', 'scan_internet', 'scan_status',
+            'search', 'search_cursor', 'search_facets', 'search_filters', 'search_tokens',
+            'services', 'queries', 'queries_search', 'queries_tags',
+            'create_alert', 'edit_alert', 'alerts', 'delete_alert', 'alert_triggers',
+            'enable_alert_trigger', 'disable_alert_trigger',
+            'ignore_alert_trigger_notification', 'unignore_alert_trigger_notification',
+            'add_alert_notifier', 'remove_alert_notifier',
+            'aclose',
         }
         async_methods = {
             name for name in dir(AsyncShodan)
             if not name.startswith('_') and callable(getattr(AsyncShodan, name))
         }
-        # The async client should cover all sync public methods
-        missing = sync_methods - async_methods - {'Data', 'Dns', 'Exploits', 'Labs',
-                                                   'Notifier', 'Organization', 'Tools',
-                                                   'Trends'}
-        assert not missing, "AsyncShodan is missing methods: {}".format(missing)
+        missing = expected - async_methods
+        assert not missing, 'AsyncShodan is missing methods: {}'.format(missing)
 
     def test_async_threatnet_inner_class_not_named_async_stream(self):
         """AsyncThreatnet inner class must not shadow the module-level AsyncStream."""
@@ -723,3 +728,350 @@ class TestPublicImports:
         # The inner class should NOT be named AsyncStream at the module level
         assert not hasattr(AsyncThreatnet, 'AsyncStream'), \
             "AsyncThreatnet.AsyncStream shadows shodan.async_stream.AsyncStream"
+
+    def test_repr_masks_api_key(self):
+        """AsyncShodan repr must not expose the API key (OWASP A02/A09)."""
+        api = AsyncShodan('super_secret_key')
+        assert 'super_secret_key' not in repr(api)
+        assert '***' in repr(api)
+
+    def test_https_only_env_override(self):
+        """SHODAN_API_URL env var must use https:// (OWASP A02)."""
+        import os
+        os.environ['SHODAN_API_URL'] = 'http://evil.example.com'
+        try:
+            with pytest.raises(ValueError, match='https'):
+                AsyncShodan(API_KEY)
+        finally:
+            del os.environ['SHODAN_API_URL']
+
+    def test_sanitize_path_param_rejects_null_byte(self):
+        """_sanitize_path_param must reject null bytes (OWASP A03)."""
+        with pytest.raises(ValueError):
+            AsyncShodan._sanitize_path_param('bad\x00value', 'test')
+
+    def test_sanitize_path_param_rejects_newline(self):
+        """_sanitize_path_param must reject newlines (header injection, OWASP A03)."""
+        with pytest.raises(ValueError):
+            AsyncShodan._sanitize_path_param('bad\nvalue', 'test')
+
+    def test_sanitize_path_param_rejects_non_string(self):
+        """_sanitize_path_param must reject non-string types."""
+        with pytest.raises(TypeError):
+            AsyncShodan._sanitize_path_param(12345, 'test')
+
+
+# ---------------------------------------------------------------------------
+# Full REST coverage — previously untested methods
+# ---------------------------------------------------------------------------
+
+class TestAsyncShodanFullCoverage:
+    """Cover every REST method that was missing a test."""
+
+    # -- Notifier sub-API --------------------------------------------------
+
+    async def test_notifier_create(self):
+        payload = {'success': True, 'id': 'notif1'}
+        async with AsyncShodan(API_KEY) as api:
+            with aioresponses() as m:
+                m.post(_url('/notifier'), payload=payload)
+                result = await api.notifier.create('slack', {'url': 'https://hooks.example.com'})
+        assert result['id'] == 'notif1'
+
+    async def test_notifier_edit(self):
+        payload = {'success': True}
+        async with AsyncShodan(API_KEY) as api:
+            with aioresponses() as m:
+                m.put(_url('/notifier/notif1'), payload=payload)
+                result = await api.notifier.edit('notif1', {'url': 'https://new.example.com'})
+        assert result['success'] is True
+
+    async def test_notifier_get(self):
+        payload = {'id': 'notif1', 'provider': 'slack'}
+        async with AsyncShodan(API_KEY) as api:
+            with aioresponses() as m:
+                m.get(_url('/notifier/notif1'), payload=payload)
+                result = await api.notifier.get('notif1')
+        assert result['provider'] == 'slack'
+
+    async def test_notifier_remove(self):
+        payload = {'success': True}
+        async with AsyncShodan(API_KEY) as api:
+            with aioresponses() as m:
+                m.delete(_url('/notifier/notif1'), payload=payload)
+                result = await api.notifier.remove('notif1')
+        assert result['success'] is True
+
+    # -- Organization sub-API ----------------------------------------------
+
+    async def test_org_add_member(self):
+        payload = {'success': True}
+        async with AsyncShodan(API_KEY) as api:
+            with aioresponses() as m:
+                m.put(_url('/org/member/bob'), payload=payload)
+                result = await api.org.add_member('bob')
+        assert result is True
+
+    async def test_org_remove_member(self):
+        payload = {'success': True}
+        async with AsyncShodan(API_KEY) as api:
+            with aioresponses() as m:
+                m.delete(_url('/org/member/bob'), payload=payload)
+                result = await api.org.remove_member('bob')
+        assert result is True
+
+    # -- scan_internet -----------------------------------------------------
+
+    async def test_scan_internet(self):
+        payload = {'id': 'internet-scan-1'}
+        async with AsyncShodan(API_KEY) as api:
+            with aioresponses() as m:
+                m.post(_url('/shodan/scan/internet'), payload=payload)
+                result = await api.scan_internet(80, 'http')
+        assert result['id'] == 'internet-scan-1'
+
+    # -- Alert management --------------------------------------------------
+
+    async def test_edit_alert(self):
+        payload = {'id': 'alert1', 'filters': {'ip': '1.2.3.4'}}
+        async with AsyncShodan(API_KEY) as api:
+            with aioresponses() as m:
+                m.post(_url('/shodan/alert/alert1'), payload=payload)
+                result = await api.edit_alert('alert1', '1.2.3.4')
+        assert result['id'] == 'alert1'
+
+    async def test_enable_alert_trigger(self):
+        payload = {'success': True}
+        async with AsyncShodan(API_KEY) as api:
+            with aioresponses() as m:
+                m.put(_url('/shodan/alert/alert1/trigger/malware'), payload=payload)
+                result = await api.enable_alert_trigger('alert1', 'malware')
+        assert result['success'] is True
+
+    async def test_disable_alert_trigger(self):
+        payload = {'success': True}
+        async with AsyncShodan(API_KEY) as api:
+            with aioresponses() as m:
+                m.delete(_url('/shodan/alert/alert1/trigger/malware'), payload=payload)
+                result = await api.disable_alert_trigger('alert1', 'malware')
+        assert result['success'] is True
+
+    async def test_ignore_alert_trigger_notification_no_vulns(self):
+        payload = {'success': True}
+        async with AsyncShodan(API_KEY) as api:
+            with aioresponses() as m:
+                m.put(_url('/shodan/alert/alert1/trigger/malware/ignore/1.2.3.4:443'),
+                      payload=payload)
+                result = await api.ignore_alert_trigger_notification(
+                    'alert1', 'malware', '1.2.3.4', 443)
+        assert result['success'] is True
+
+    async def test_ignore_alert_trigger_notification_with_vulns(self):
+        payload = {'success': True}
+        async with AsyncShodan(API_KEY) as api:
+            with aioresponses() as m:
+                m.put(_url('/shodan/alert/alert1/trigger/vulnerable/ignore/1.2.3.4:443/CVE-2021-1234'),
+                      payload=payload)
+                result = await api.ignore_alert_trigger_notification(
+                    'alert1', 'vulnerable', '1.2.3.4', 443, vulns=['CVE-2021-1234'])
+        assert result['success'] is True
+
+    async def test_unignore_alert_trigger_notification(self):
+        payload = {'success': True}
+        async with AsyncShodan(API_KEY) as api:
+            with aioresponses() as m:
+                m.delete(_url('/shodan/alert/alert1/trigger/malware/ignore/1.2.3.4:443'),
+                         payload=payload)
+                result = await api.unignore_alert_trigger_notification(
+                    'alert1', 'malware', '1.2.3.4', 443)
+        assert result['success'] is True
+
+    async def test_add_alert_notifier(self):
+        payload = {'success': True}
+        async with AsyncShodan(API_KEY) as api:
+            with aioresponses() as m:
+                m.put(_url('/shodan/alert/alert1/notifier/notif1'), payload=payload)
+                result = await api.add_alert_notifier('alert1', 'notif1')
+        assert result['success'] is True
+
+    async def test_remove_alert_notifier(self):
+        payload = {'success': True}
+        async with AsyncShodan(API_KEY) as api:
+            with aioresponses() as m:
+                m.delete(_url('/shodan/alert/alert1/notifier/notif1'), payload=payload)
+                result = await api.remove_alert_notifier('alert1', 'notif1')
+        assert result['success'] is True
+
+    # -- Data sub-API ------------------------------------------------------
+
+    async def test_data_list_files(self):
+        payload = [{'name': 'file1.json.gz', 'size': 1024, 'timestamp': '2023-01-01', 'url': 'https://example.com/file1'}]
+        async with AsyncShodan(API_KEY) as api:
+            with aioresponses() as m:
+                m.get(_url('/shodan/data/my-dataset'), payload=payload)
+                result = await api.data.list_files('my-dataset')
+        assert result[0]['name'] == 'file1.json.gz'
+
+    # -- OWASP: input sanitisation -----------------------------------------
+
+    async def test_host_rejects_null_byte_in_ip(self):
+        """host() must reject IP strings containing null bytes (OWASP A03)."""
+        async with AsyncShodan(API_KEY) as api:
+            with pytest.raises(ValueError):
+                await api.host('8.8.8\x008')
+
+    async def test_scan_status_rejects_null_byte(self):
+        async with AsyncShodan(API_KEY) as api:
+            with pytest.raises(ValueError):
+                await api.scan_status('scan\x00id')
+
+    async def test_delete_alert_rejects_newline(self):
+        async with AsyncShodan(API_KEY) as api:
+            with pytest.raises(ValueError):
+                await api.delete_alert('alert\nid')
+
+
+# ---------------------------------------------------------------------------
+# Stream endpoint coverage — previously untested stream methods
+# ---------------------------------------------------------------------------
+
+class TestAsyncStreamFullCoverage:
+    """Test all stream endpoints that had no existing test."""
+
+    async def test_stream_asn(self):
+        banner = {'ip_str': '1.2.3.4', 'asn': 'AS1234'}
+        body = json.dumps(banner) + '\n'
+        stream = AsyncStream(API_KEY)
+        with aioresponses() as m:
+            m.get(_surl('/shodan/asn/AS1234'), status=200, body=body)
+            items = []
+            async for item in stream.asn(['AS1234'], timeout=1):
+                items.append(item)
+        assert len(items) == 1
+        assert items[0]['asn'] == 'AS1234'
+
+    async def test_stream_countries(self):
+        banner = {'ip_str': '1.2.3.4', 'location': {'country_code': 'US'}}
+        body = json.dumps(banner) + '\n'
+        stream = AsyncStream(API_KEY)
+        with aioresponses() as m:
+            m.get(_surl('/shodan/countries/US'), status=200, body=body)
+            items = []
+            async for item in stream.countries(['US'], timeout=1):
+                items.append(item)
+        assert len(items) == 1
+
+    async def test_stream_custom(self):
+        banner = {'ip_str': '5.6.7.8', 'port': 80}
+        body = json.dumps(banner) + '\n'
+        stream = AsyncStream(API_KEY)
+        with aioresponses() as m:
+            m.get(_surl('/shodan/custom'), status=200, body=body)
+            items = []
+            async for item in stream.custom('port:80', timeout=1):
+                items.append(item)
+        assert len(items) == 1
+
+    async def test_stream_ports(self):
+        banner = {'ip_str': '9.10.11.12', 'port': 22}
+        body = json.dumps(banner) + '\n'
+        stream = AsyncStream(API_KEY)
+        with aioresponses() as m:
+            m.get(_surl('/shodan/ports/22'), status=200, body=body)
+            items = []
+            async for item in stream.ports([22], timeout=1):
+                items.append(item)
+        assert len(items) == 1
+        assert items[0]['port'] == 22
+
+    async def test_stream_tags(self):
+        banner = {'ip_str': '1.1.1.1', 'tags': ['ics']}
+        body = json.dumps(banner) + '\n'
+        stream = AsyncStream(API_KEY)
+        with aioresponses() as m:
+            m.get(_surl('/shodan/tags/ics'), status=200, body=body)
+            items = []
+            async for item in stream.tags(['ics'], timeout=1):
+                items.append(item)
+        assert len(items) == 1
+
+    async def test_stream_vulns(self):
+        banner = {'ip_str': '2.2.2.2', 'vulns': {'CVE-2021-1234': {}}}
+        body = json.dumps(banner) + '\n'
+        stream = AsyncStream(API_KEY)
+        with aioresponses() as m:
+            m.get(_surl('/shodan/vulns/CVE-2021-1234'), status=200, body=body)
+            items = []
+            async for item in stream.vulns(['CVE-2021-1234'], timeout=1):
+                items.append(item)
+        assert len(items) == 1
+
+    async def test_stream_alert_with_specific_id(self):
+        banner = {'ip_str': '3.3.3.3', 'port': 443}
+        body = json.dumps(banner) + '\n'
+        stream = AsyncStream(API_KEY)
+        with aioresponses() as m:
+            m.get(_surl('/shodan/alert/myalert1'), status=200, body=body)
+            items = []
+            async for item in stream.alert(aid='myalert1', timeout=1):
+                items.append(item)
+        assert len(items) == 1
+
+    async def test_stream_raw_mode(self):
+        """When raw=True, stream yields bytes instead of dicts."""
+        banner = {'ip_str': '4.4.4.4', 'port': 80}
+        body = json.dumps(banner) + '\n'
+        stream = AsyncStream(API_KEY)
+        with aioresponses() as m:
+            m.get(_surl('/shodan/banners'), status=200, body=body)
+            items = []
+            async for item in stream.banners(raw=True, timeout=1):
+                items.append(item)
+        assert len(items) == 1
+        assert isinstance(items[0], bytes)
+
+
+# ---------------------------------------------------------------------------
+# AsyncThreatnet — backscatter and activity coverage
+# ---------------------------------------------------------------------------
+
+class TestAsyncThreatnetFullCoverage:
+    """Test Threatnet stream methods that previously had no coverage."""
+
+    async def test_threatnet_backscatter_yields_items(self):
+        from shodan.async_threatnet import AsyncThreatnet
+        event = {'type': 'backscatter', 'ip': '5.5.5.5'}
+        body = json.dumps(event) + '\n'
+        tn = AsyncThreatnet(API_KEY)
+        with aioresponses() as m:
+            m.get(re.compile(r'^https://stream\.shodan\.io/threatnet/backscatter.*'),
+                  status=200, body=body)
+            items = []
+            async for item in tn.stream.backscatter(timeout=1):
+                items.append(item)
+        assert len(items) == 1
+        assert items[0]['type'] == 'backscatter'
+
+    async def test_threatnet_activity_yields_items(self):
+        from shodan.async_threatnet import AsyncThreatnet
+        event = {'type': 'ssh', 'ip': '6.6.6.6'}
+        body = json.dumps(event) + '\n'
+        tn = AsyncThreatnet(API_KEY)
+        with aioresponses() as m:
+            m.get(re.compile(r'^https://stream\.shodan\.io/threatnet/ssh.*'),
+                  status=200, body=body)
+            items = []
+            async for item in tn.stream.activity(timeout=1):
+                items.append(item)
+        assert len(items) == 1
+        assert items[0]['type'] == 'ssh'
+
+    async def test_threatnet_backscatter_invalid_key(self):
+        from shodan.async_threatnet import AsyncThreatnet
+        tn = AsyncThreatnet('garbage')
+        with aioresponses() as m:
+            m.get(re.compile(r'^https://stream\.shodan\.io/threatnet/backscatter.*'),
+                  status=401, payload={'error': 'Invalid API key'})
+            with pytest.raises(APIError):
+                async for _ in tn.stream.backscatter(timeout=1):
+                    break
